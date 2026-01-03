@@ -1,4 +1,4 @@
-name: cpu-upscale-4x-safe
+name: cpu-upscale-4x-python
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout current repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Validate images folder
@@ -21,65 +21,39 @@ jobs:
             exit 0
           fi
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake build-essential \
-            libopencv-dev \
-            libomp-dev \
-            git
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
-      - name: Disable git interactive auth
+      - name: Install Real-ESRGAN (CPU)
         run: |
-          git config --global core.askPass true
-          git config --global credential.helper ""
+          pip install --upgrade pip
+          pip install realesrgan
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Clone realesrgan-ncnn (public, shallow)
+      - name: Download model
         run: |
-          git clone --depth 1 https://github.com/xinntao/realesrgan-ncnn.git
+          mkdir -p weights
+          curl -L -o weights/RealESRGAN_x4plus.pth \
+            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
 
-      - name: Build realesrgan-ncnn (CPU)
-        run: |
-          cd realesrgan-ncnn
-          mkdir -p build
-          cd build
-          cmake .. -Wno-dev
-          make -j$(nproc)
-
-      - name: Verify binary
-        run: |
-          if [ ! -f realesrgan-ncnn/build/realesrgan-ncnn ]; then
-            echo "Binary missing"
-            exit 1
-          fi
-
-      - name: Download model files
-        run: |
-          mkdir -p realesrgan-ncnn/models
-          curl -L --fail \
-            -o realesrgan-ncnn/models/RealESRGAN_x4plus.bin \
-            https://github.com/xinntao/realesrgan-ncnn/releases/download/v0.2.0/RealESRGAN_x4plus.bin
-          curl -L --fail \
-            -o realesrgan-ncnn/models/RealESRGAN_x4plus.param \
-            https://github.com/xinntao/realesrgan-ncnn/releases/download/v0.2.0/RealESRGAN_x4plus.param
-
-      - name: Upscale images (CPU batch 4x)
+      - name: Upscale images (4x CPU)
         run: |
           mkdir -p upscaled
-
           for img in images/*; do
             if [ -f "$img" ]; then
               echo "Upscaling $img"
-              realesrgan-ncnn/build/realesrgan-ncnn \
+              python -m realesrgan \
                 -i "$img" \
-                -o "upscaled/$(basename "$img")" \
+                -o upscaled \
                 -n RealESRGAN_x4plus \
-                -s 4
+                --model_path weights/RealESRGAN_x4plus.pth \
+                --fp32
             fi
           done
 
-      - name: Upload result as artifact
+      - name: Upload results (artifact link)
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-4x
