@@ -1,4 +1,4 @@
-name: cpu-upscale-4x-python
+name: cpu-upscale-4x-python-safe
 
 on:
   push:
@@ -26,11 +26,22 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install Real-ESRGAN (CPU)
+      - name: Install PyTorch CPU only
         run: |
           pip install --upgrade pip
-          pip install realesrgan
-          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install \
+            torch torchvision \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install Real-ESRGAN (NO CUDA deps)
+        run: |
+          pip install realesrgan --no-deps
+
+      - name: Install minimal dependencies
+        run: |
+          pip install \
+            numpy opencv-python pillow tqdm \
+            basicsr facexlib gfpgan
 
       - name: Download model
         run: |
@@ -53,7 +64,7 @@ jobs:
             fi
           done
 
-      - name: Upload results (artifact link)
+      - name: Upload result as artifact
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-4x
