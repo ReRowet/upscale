@@ -1,4 +1,4 @@
-name: cpu-upscale-4x
+name: cpu-upscale-4x-clean
 
 on:
   push:
@@ -14,14 +14,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate images folder
+      - name: Validate input images
         run: |
           if [ ! -d images ] || [ -z "$(ls -A images 2>/dev/null)" ]; then
-            echo "No images found. Exiting."
+            echo "No images found. Exit."
             exit 0
           fi
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -32,21 +32,32 @@ jobs:
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
 
-      - name: Clone realesrgan-ncnn-vulkan
+      - name: Clone Real-ESRGAN NCNN Vulkan
         run: |
           git clone https://github.com/xinntao/realesrgan-ncnn-vulkan.git
           cd realesrgan-ncnn-vulkan
           git submodule update --init --recursive
 
-      - name: Build realesrgan-ncnn-vulkan (CPU, correct CMake path)
+      - name: Configure build (no dev warnings)
         run: |
           cd realesrgan-ncnn-vulkan
           mkdir -p build
           cd build
-          cmake ../src
+          cmake ../src -Wno-dev
+
+      - name: Build binary
+        run: |
+          cd realesrgan-ncnn-vulkan/build
           make -j$(nproc)
 
-      - name: Download Real-ESRGAN model (NCNN)
+      - name: Verify binary exists
+        run: |
+          if [ ! -f realesrgan-ncnn-vulkan/build/realesrgan-ncnn-vulkan ]; then
+            echo "Binary not found. Build failed."
+            exit 1
+          fi
+
+      - name: Download model files
         run: |
           mkdir -p realesrgan-ncnn-vulkan/models
           curl -L -o realesrgan-ncnn-vulkan/models/RealESRGAN_x4plus.bin \
@@ -54,13 +65,13 @@ jobs:
           curl -L -o realesrgan-ncnn-vulkan/models/RealESRGAN_x4plus.param \
             https://github.com/xinntao/realesrgan-ncnn-vulkan/releases/download/v0.2.0/RealESRGAN_x4plus.param
 
-      - name: Upscale images (4x batch)
+      - name: Upscale images (4x, batch)
         run: |
           mkdir -p upscaled
 
           for img in images/*; do
             if [ -f "$img" ]; then
-              echo "Upscaling: $img"
+              echo "Upscaling $img"
               realesrgan-ncnn-vulkan/build/realesrgan-ncnn-vulkan \
                 -i "$img" \
                 -o "upscaled/$(basename "$img")" \
@@ -69,13 +80,13 @@ jobs:
             fi
           done
 
-      - name: Upload results as artifact
+      - name: Upload results (artifact link)
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-4x
           path: upscaled/
           retention-days: 30
 
-      - name: Cleanup input images
+      - name: Cleanup images folder
         run: |
           rm -rf images/*
