@@ -28,24 +28,27 @@ jobs:
             git cmake build-essential \
             libopencv-dev
 
-      - name: Clone Real-ESRGAN
+      - name: Clone realesrgan-ncnn-vulkan
         run: |
-          git clone https://github.com/xinntao/Real-ESRGAN.git
-          cd Real-ESRGAN
+          git clone https://github.com/xinntao/realesrgan-ncnn-vulkan.git
+          cd realesrgan-ncnn-vulkan
           git submodule update --init --recursive
 
-      - name: Build Real-ESRGAN (CPU, NCNN)
+      - name: Build realesrgan-ncnn-vulkan (CPU)
         run: |
-          cd Real-ESRGAN
-          mkdir build && cd build
+          cd realesrgan-ncnn-vulkan
+          mkdir -p build
+          cd build
           cmake ..
           make -j$(nproc)
 
       - name: Download Real-ESRGAN model
         run: |
-          mkdir -p Real-ESRGAN/models
-          curl -L -o Real-ESRGAN/models/RealESRGAN_x4plus.pth \
-          https://github.com/xinntao/Real-ESRGAN/releases/download/v0.3.0/RealESRGAN_x4plus.pth
+          mkdir -p realesrgan-ncnn-vulkan/models
+          curl -L -o realesrgan-ncnn-vulkan/models/RealESRGAN_x4plus.bin \
+            https://github.com/xinntao/realesrgan-ncnn-vulkan/releases/download/v0.2.0/RealESRGAN_x4plus.bin
+          curl -L -o realesrgan-ncnn-vulkan/models/RealESRGAN_x4plus.param \
+            https://github.com/xinntao/realesrgan-ncnn-vulkan/releases/download/v0.2.0/RealESRGAN_x4plus.param
 
       - name: Upscale images (4x batch)
         run: |
@@ -54,7 +57,7 @@ jobs:
           for img in images/*; do
             if [ -f "$img" ]; then
               echo "Upscaling $img"
-              Real-ESRGAN/build/realesrgan-ncnn \
+              realesrgan-ncnn-vulkan/build/realesrgan-ncnn-vulkan \
                 -i "$img" \
                 -o "upscaled/$(basename "$img")" \
                 -n RealESRGAN_x4plus \
