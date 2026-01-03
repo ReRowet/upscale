@@ -32,18 +32,18 @@ jobs:
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
 
-      - name: Clone realesrgan-ncnn-vulkan with submodules
+      - name: Clone realesrgan-ncnn-vulkan
         run: |
           git clone https://github.com/xinntao/realesrgan-ncnn-vulkan.git
           cd realesrgan-ncnn-vulkan
           git submodule update --init --recursive
 
-      - name: Build realesrgan-ncnn-vulkan (CPU)
+      - name: Build realesrgan-ncnn-vulkan (CPU, correct CMake path)
         run: |
           cd realesrgan-ncnn-vulkan
           mkdir -p build
           cd build
-          cmake ..
+          cmake ../src
           make -j$(nproc)
 
       - name: Download Real-ESRGAN model (NCNN)
