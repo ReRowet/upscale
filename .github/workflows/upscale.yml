@@ -11,35 +11,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install system deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip
+          sudo apt update
+          sudo apt install -y unzip
 
-      - name: Download Real-ESRGAN ncnn binary
+      - name: Download Real-ESRGAN binary (official)
         run: |
           wget -O realesrgan.zip https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
           unzip realesrgan.zip
-          chmod +x realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan
+          chmod +x realesrgan-ncnn-vulkan
 
       - name: Prepare folders
         run: |
           mkdir -p images
           mkdir -p upscaled
 
-      - name: Run Real-ESRGAN (CPU mode)
+      - name: Run upscale (CPU forced)
         run: |
-          ./realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan \
+          ./realesrgan-ncnn-vulkan \
             -i images \
             -o upscaled \
-            -n RealESRGAN_x4plus \
+            -n realesrgan-x4plus \
             -s 4 \
             -g -1
 
-      - name: Upload upscaled images
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-images
