@@ -1,4 +1,4 @@
-name: Real-ESRGAN CPU Upscale
+name: Real-ESRGAN CPU (Python Stable)
 
 on:
   workflow_dispatch:
@@ -11,35 +11,51 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install system deps
-        run: |
-          sudo apt update
-          sudo apt install -y unzip
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
-      - name: Download Real-ESRGAN binary (official)
+      - name: Install dependencies (LOCKED)
         run: |
-          wget -O realesrgan.zip https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
-          unzip realesrgan.zip
-          chmod +x realesrgan-ncnn-vulkan
+          python -m pip install --upgrade pip
+          pip install \
+            numpy==1.26.4 \
+            torch==2.0.1+cpu \
+            torchvision==0.15.2+cpu \
+            -f https://download.pytorch.org/whl/cpu/torch_stable.html
+          pip install realesrgan==0.3.0 basicsr==1.4.2
 
-      - name: Prepare folders
+      - name: Download model
         run: |
-          mkdir -p images
+          mkdir -p weights
+          wget -O weights/RealESRGAN_x4plus.pth \
+            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus.pth
+
+      - name: Run upscale (CPU)
+        run: |
           mkdir -p upscaled
+          python - << 'EOF'
+          from realesrgan import RealESRGAN
+          from PIL import Image
+          import torch, os
 
-      - name: Run upscale (CPU forced)
-        run: |
-          ./realesrgan-ncnn-vulkan \
-            -i images \
-            -o upscaled \
-            -n realesrgan-x4plus \
-            -s 4 \
-            -g -1
+          device = torch.device("cpu")
+          model = RealESRGAN(device, scale=4)
+          model.load_weights("weights/RealESRGAN_x4plus.pth")
 
-      - name: Upload results
+          os.makedirs("upscaled", exist_ok=True)
+
+          for f in os.listdir("images"):
+              if f.lower().endswith((".png",".jpg",".jpeg")):
+                  img = Image.open(f"images/{f}").convert("RGB")
+                  sr = model.predict(img)
+                  sr.save(f"upscaled/{f}")
+          EOF
+
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-images
