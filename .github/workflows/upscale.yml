@@ -11,36 +11,55 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Validate images folder
         run: |
-          if [ -z "$(ls -A images 2>/dev/null)" ]; then
-            echo "No images found. Exiting."
+          if [ ! -d images ] || [ -z "$(ls -A images 2>/dev/null)" ]; then
+            echo "No images found. Nothing to process."
             exit 0
           fi
 
-      - name: Download Real-ESRGAN (latest, CPU fallback)
+      - name: Download Real-ESRGAN (safe via GitHub API)
         run: |
-          curl -L -o realesrgan.zip \
-          https://github.com/xinntao/Real-ESRGAN/releases/latest/download/realesrgan-ncnn-vulkan-linux.zip
+          echo "Resolving Real-ESRGAN Linux asset..."
+
+          ASSET_URL=$(curl -s https://api.github.com/repos/xinntao/Real-ESRGAN/releases/latest \
+            | grep browser_download_url \
+            | grep linux \
+            | grep vulkan \
+            | cut -d '"' -f 4)
+
+          if [ -z "$ASSET_URL" ]; then
+            echo "ERROR: Real-ESRGAN Linux Vulkan asset not found"
+            exit 1
+          fi
+
+          echo "Downloading: $ASSET_URL"
+          curl -L -o realesrgan.zip "$ASSET_URL"
+
           unzip realesrgan.zip
           chmod +x realesrgan-ncnn-vulkan
 
-      - name: Upscale images 4x (batch)
+          ./realesrgan-ncnn-vulkan -h > /dev/null
+
+      - name: Upscale images (4x, batch)
         run: |
           mkdir -p upscaled
+
           for img in images/*; do
-            echo "Upscaling $img"
-            ./realesrgan-ncnn-vulkan \
-              -i "$img" \
-              -o "upscaled/$(basename "$img")" \
-              -n realesrgan-x4plus \
-              -s 4
+            if [ -f "$img" ]; then
+              echo "Upscaling: $img"
+              ./realesrgan-ncnn-vulkan \
+                -i "$img" \
+                -o "upscaled/$(basename "$img")" \
+                -n realesrgan-x4plus \
+                -s 4
+            fi
           done
 
-      - name: Upload result as artifact (download link)
+      - name: Upload results as artifact (download link)
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-4x
