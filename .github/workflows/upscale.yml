@@ -1,4 +1,4 @@
-name: Image Upscale Real-ESRGAN (CPU Stable)
+name: Real-ESRGAN CPU Stable (CLI)
 
 on:
   workflow_dispatch:
@@ -12,92 +12,51 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python 3.10
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ===== FIX NUMPY 2.x ROOT PROBLEM =====
-      - name: Remove preinstalled NumPy & cache
+      - name: Clean numpy
         run: |
           pip uninstall -y numpy || true
           pip cache purge
 
-      - name: Install NumPy 1.23.5 (hard lock)
-        run: |
-          pip install --no-cache-dir numpy==1.23.5
-          python - << 'EOF'
-          import numpy
-          print("NumPy OK:", numpy.__version__)
-          EOF
+      - name: Install NumPy 1.x ONLY
+        run: pip install --no-cache-dir "numpy<2"
 
-      # ===== INSTALL TORCH CPU (SAFE PAIRING) =====
-      - name: Install PyTorch CPU
+      - name: Install Torch CPU
         run: |
           pip install --no-cache-dir \
             torch==1.13.1+cpu \
             torchvision==0.14.1+cpu \
             --index-url https://download.pytorch.org/whl/cpu
 
-      # ===== INSTALL REAL-ESRGAN STACK (NO AUTO DEPS) =====
-      - name: Install Real-ESRGAN dependencies
+      - name: Clone Real-ESRGAN
         run: |
-          pip install --no-cache-dir realesrgan==0.3.0 --no-deps
-          pip install --no-cache-dir \
-            basicsr==1.4.2 \
-            facexlib==0.3.0 \
-            gfpgan==1.3.8 \
-            opencv-python \
-            pillow \
-            tqdm
+          git clone https://github.com/xinntao/Real-ESRGAN.git
+          cd Real-ESRGAN
+          pip install --no-cache-dir -r requirements.txt
 
-      # ===== FINAL ENV CHECK =====
-      - name: Verify environment
+      - name: Download model
         run: |
-          python - << 'EOF'
-          import torch, numpy, realesrgan
-          print("Torch:", torch.__version__)
-          print("NumPy:", numpy.__version__)
-          print("Real-ESRGAN loaded OK")
-          EOF
+          mkdir -p Real-ESRGAN/weights
+          wget -O Real-ESRGAN/weights/RealESRGAN_x4plus.pth \
+            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
 
-      # ===== PREPARE OUTPUT DIR =====
-      - name: Create output folder
-        run: mkdir -p upscaled
-
-      # ===== UPSCALE ALL IMAGES =====
       - name: Upscale images
         run: |
-          python - << 'EOF'
-          import os
-          from realesrgan import RealESRGAN
-          from PIL import Image
-          import torch
+          mkdir -p upscaled
+          python Real-ESRGAN/inference_realesrgan.py \
+            -n RealESRGAN_x4plus \
+            -i images \
+            -o upscaled \
+            -s 4 \
+            --fp32
 
-          device = torch.device("cpu")
-          model = RealESRGAN(device, scale=4)
-          model.load_weights("RealESRGAN_x4plus.pth", download=True)
-
-          input_dir = "images"
-          output_dir = "upscaled"
-
-          for file in os.listdir(input_dir):
-              if file.lower().endswith((".jpg", ".png", ".jpeg")):
-                  inp = os.path.join(input_dir, file)
-                  out = os.path.join(output_dir, file)
-                  print("Upscaling:", file)
-                  img = Image.open(inp).convert("RGB")
-                  sr = model.predict(img)
-                  sr.save(out)
-
-          print("Upscaling completed")
-          EOF
-
-      # ===== SAVE RESULT =====
-      - name: Upload upscaled images
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-images
