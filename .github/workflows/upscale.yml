@@ -17,49 +17,52 @@ jobs:
       - name: Validate images folder
         run: |
           if [ ! -d images ] || [ -z "$(ls -A images 2>/dev/null)" ]; then
-            echo "No images found. Nothing to process."
+            echo "No images found. Exiting."
             exit 0
           fi
 
-      - name: Download Real-ESRGAN (safe via GitHub API)
+      - name: Install build dependencies
         run: |
-          echo "Resolving Real-ESRGAN Linux asset..."
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake build-essential \
+            libopencv-dev
 
-          ASSET_URL=$(curl -s https://api.github.com/repos/xinntao/Real-ESRGAN/releases/latest \
-            | grep browser_download_url \
-            | grep linux \
-            | grep vulkan \
-            | cut -d '"' -f 4)
+      - name: Clone Real-ESRGAN
+        run: |
+          git clone https://github.com/xinntao/Real-ESRGAN.git
+          cd Real-ESRGAN
+          git submodule update --init --recursive
 
-          if [ -z "$ASSET_URL" ]; then
-            echo "ERROR: Real-ESRGAN Linux Vulkan asset not found"
-            exit 1
-          fi
+      - name: Build Real-ESRGAN (CPU, NCNN)
+        run: |
+          cd Real-ESRGAN
+          mkdir build && cd build
+          cmake ..
+          make -j$(nproc)
 
-          echo "Downloading: $ASSET_URL"
-          curl -L -o realesrgan.zip "$ASSET_URL"
+      - name: Download Real-ESRGAN model
+        run: |
+          mkdir -p Real-ESRGAN/models
+          curl -L -o Real-ESRGAN/models/RealESRGAN_x4plus.pth \
+          https://github.com/xinntao/Real-ESRGAN/releases/download/v0.3.0/RealESRGAN_x4plus.pth
 
-          unzip realesrgan.zip
-          chmod +x realesrgan-ncnn-vulkan
-
-          ./realesrgan-ncnn-vulkan -h > /dev/null
-
-      - name: Upscale images (4x, batch)
+      - name: Upscale images (4x batch)
         run: |
           mkdir -p upscaled
 
           for img in images/*; do
             if [ -f "$img" ]; then
-              echo "Upscaling: $img"
-              ./realesrgan-ncnn-vulkan \
+              echo "Upscaling $img"
+              Real-ESRGAN/build/realesrgan-ncnn \
                 -i "$img" \
                 -o "upscaled/$(basename "$img")" \
-                -n realesrgan-x4plus \
+                -n RealESRGAN_x4plus \
                 -s 4
             fi
           done
 
-      - name: Upload results as artifact (download link)
+      - name: Upload results as artifact
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-4x
