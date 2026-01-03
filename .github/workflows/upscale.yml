@@ -1,4 +1,4 @@
-name: cpu-upscale-4x-final
+name: cpu-upscale-4x-safe
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout repository
+      - name: Checkout current repository
         uses: actions/checkout@v4
 
       - name: Validate images folder
@@ -25,15 +25,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git cmake build-essential \
+            cmake build-essential \
             libopencv-dev \
-            libomp-dev
+            libomp-dev \
+            git
 
-      - name: Clone realesrgan-ncnn (CPU)
+      - name: Disable git interactive auth
         run: |
-          git clone https://github.com/xinntao/realesrgan-ncnn.git
+          git config --global core.askPass true
+          git config --global credential.helper ""
 
-      - name: Build realesrgan-ncnn (CPU only)
+      - name: Clone realesrgan-ncnn (public, shallow)
+        run: |
+          git clone --depth 1 https://github.com/xinntao/realesrgan-ncnn.git
+
+      - name: Build realesrgan-ncnn (CPU)
         run: |
           cd realesrgan-ncnn
           mkdir -p build
@@ -48,15 +54,17 @@ jobs:
             exit 1
           fi
 
-      - name: Download model
+      - name: Download model files
         run: |
           mkdir -p realesrgan-ncnn/models
-          curl -L -o realesrgan-ncnn/models/RealESRGAN_x4plus.bin \
+          curl -L --fail \
+            -o realesrgan-ncnn/models/RealESRGAN_x4plus.bin \
             https://github.com/xinntao/realesrgan-ncnn/releases/download/v0.2.0/RealESRGAN_x4plus.bin
-          curl -L -o realesrgan-ncnn/models/RealESRGAN_x4plus.param \
+          curl -L --fail \
+            -o realesrgan-ncnn/models/RealESRGAN_x4plus.param \
             https://github.com/xinntao/realesrgan-ncnn/releases/download/v0.2.0/RealESRGAN_x4plus.param
 
-      - name: Upscale images (4x, CPU batch)
+      - name: Upscale images (CPU batch 4x)
         run: |
           mkdir -p upscaled
 
@@ -71,7 +79,7 @@ jobs:
             fi
           done
 
-      - name: Upload artifact (download link)
+      - name: Upload result as artifact
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-4x
