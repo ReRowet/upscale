@@ -8,28 +8,45 @@ on:
 jobs:
   upscale:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Download Real-ESRGAN
+      - name: Validate images folder
         run: |
-          wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.3.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
-          unzip realesrgan-ncnn-vulkan-*.zip
+          if [ -z "$(ls -A images 2>/dev/null)" ]; then
+            echo "No images found. Exiting."
+            exit 0
+          fi
 
-      - name: Upscale batch
+      - name: Download Real-ESRGAN (latest, CPU fallback)
+        run: |
+          curl -L -o realesrgan.zip \
+          https://github.com/xinntao/Real-ESRGAN/releases/latest/download/realesrgan-ncnn-vulkan-linux.zip
+          unzip realesrgan.zip
+          chmod +x realesrgan-ncnn-vulkan
+
+      - name: Upscale images 4x (batch)
         run: |
           mkdir -p upscaled
           for img in images/*; do
+            echo "Upscaling $img"
             ./realesrgan-ncnn-vulkan \
               -i "$img" \
               -o "upscaled/$(basename "$img")" \
               -n realesrgan-x4plus \
               -s 4
           done
-          rm -rf images/*
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload result as artifact (download link)
+        uses: actions/upload-artifact@v4
         with:
           name: upscaled-4x
           path: upscaled/
+          retention-days: 30
+
+      - name: Cleanup input images
+        run: |
+          rm -rf images/*
