@@ -1,0 +1,81 @@
+name: Real-ESRGAN NCNN CPU Only
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "images/**"
+
+jobs:
+  upscale:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            git \
+            wget \
+            unzip
+
+      # ===== BUILD NCNN CPU ONLY =====
+      - name: Build NCNN (CPU only)
+        run: |
+          git clone --depth 1 https://github.com/Tencent/ncnn.git
+          cd ncnn
+          mkdir build && cd build
+          cmake .. \
+            -DNCNN_VULKAN=OFF \
+            -DNCNN_BUILD_EXAMPLES=OFF \
+            -DNCNN_BUILD_TOOLS=ON
+          make -j$(nproc)
+          sudo make install
+
+      # ===== BUILD REAL-ESRGAN NCNN CPU =====
+      - name: Build Real-ESRGAN (CPU only)
+        run: |
+          git clone --depth 1 https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan.git realesrgan
+          cd realesrgan
+          mkdir build && cd build
+          cmake .. \
+            -DNCNN_VULKAN=OFF
+          make -j$(nproc)
+          cp realesrgan-ncnn-vulkan ../../realesrgan-cpu
+
+      # ===== DOWNLOAD MODEL =====
+      - name: Download model
+        run: |
+          mkdir -p models
+          wget -O models/RealESRGAN_x4plus.param \
+            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.param
+          wget -O models/RealESRGAN_x4plus.bin \
+            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.bin
+
+      # ===== UPSCALE =====
+      - name: Upscale images
+        run: |
+          mkdir -p upscaled
+          chmod +x realesrgan-cpu
+          for img in images/*; do
+            echo "Upscaling $img"
+            ./realesrgan-cpu \
+              -i "$img" \
+              -o "upscaled/$(basename "$img")" \
+              -n RealESRGAN_x4plus \
+              -s 4 \
+              -m models \
+              -g -1
+          done
+
+      # ===== UPLOAD =====
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: upscaled-images
+          path: upscaled/
