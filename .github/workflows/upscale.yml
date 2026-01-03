@@ -1,4 +1,4 @@
-name: Real-ESRGAN CPU Stable (CLI)
+name: Real-ESRGAN NCNN CPU (Stable)
 
 on:
   workflow_dispatch:
@@ -9,54 +9,46 @@ on:
 jobs:
   upscale:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y wget unzip
 
-      - name: Clean numpy
+      - name: Download Real-ESRGAN NCNN binary
         run: |
-          pip uninstall -y numpy || true
-          pip cache purge
-
-      - name: Install NumPy 1.x ONLY
-        run: pip install --no-cache-dir "numpy<2"
-
-      - name: Install Torch CPU
-        run: |
-          pip install --no-cache-dir \
-            torch==1.13.1+cpu \
-            torchvision==0.14.1+cpu \
-            --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Clone Real-ESRGAN
-        run: |
-          git clone https://github.com/xinntao/Real-ESRGAN.git
-          cd Real-ESRGAN
-          pip install --no-cache-dir -r requirements.txt
+          wget -O realesrgan.zip https://github.com/xinntao/Real-ESRGAN/releases/download/v0.3.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
+          unzip realesrgan.zip
+          chmod +x realesrgan-ncnn-vulkan
 
       - name: Download model
         run: |
-          mkdir -p Real-ESRGAN/weights
-          wget -O Real-ESRGAN/weights/RealESRGAN_x4plus.pth \
-            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
+          mkdir -p models
+          wget -O models/RealESRGAN_x4plus.bin \
+            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.bin
+          wget -O models/RealESRGAN_x4plus.param \
+            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.param
 
-      - name: Upscale images
+      - name: Create output folder
+        run: mkdir -p upscaled
+
+      - name: Upscale images (CPU)
         run: |
-          mkdir -p upscaled
-          python Real-ESRGAN/inference_realesrgan.py \
-            -n RealESRGAN_x4plus \
-            -i images \
-            -o upscaled \
-            -s 4 \
-            --fp32
+          for img in images/*; do
+            echo "Upscaling $img"
+            ./realesrgan-ncnn-vulkan \
+              -i "$img" \
+              -o "upscaled/$(basename "$img")" \
+              -n RealESRGAN_x4plus \
+              -s 4 \
+              -m models \
+              -g -1
+          done
 
-      - name: Upload result
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-images
