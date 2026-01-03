@@ -28,7 +28,11 @@ jobs:
             git cmake build-essential \
             libopencv-dev
 
-      - name: Clone realesrgan-ncnn-vulkan
+      - name: Force HTTPS for git submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Clone realesrgan-ncnn-vulkan with submodules
         run: |
           git clone https://github.com/xinntao/realesrgan-ncnn-vulkan.git
           cd realesrgan-ncnn-vulkan
@@ -42,7 +46,7 @@ jobs:
           cmake ..
           make -j$(nproc)
 
-      - name: Download Real-ESRGAN model
+      - name: Download Real-ESRGAN model (NCNN)
         run: |
           mkdir -p realesrgan-ncnn-vulkan/models
           curl -L -o realesrgan-ncnn-vulkan/models/RealESRGAN_x4plus.bin \
@@ -56,7 +60,7 @@ jobs:
 
           for img in images/*; do
             if [ -f "$img" ]; then
-              echo "Upscaling $img"
+              echo "Upscaling: $img"
               realesrgan-ncnn-vulkan/build/realesrgan-ncnn-vulkan \
                 -i "$img" \
                 -o "upscaled/$(basename "$img")" \
