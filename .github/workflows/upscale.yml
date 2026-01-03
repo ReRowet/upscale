@@ -1,4 +1,4 @@
-name: Real-ESRGAN NCNN CPU Only
+name: Real-ESRGAN CPU Only (NCNN)
 
 on:
   workflow_dispatch:
@@ -14,18 +14,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             cmake \
             git \
-            wget \
-            unzip
+            wget
 
-      # ===== BUILD NCNN CPU ONLY =====
-      - name: Build NCNN (CPU only)
+      # =========================
+      # Build NCNN (CPU only)
+      # =========================
+      - name: Build NCNN
         run: |
           git clone --depth 1 https://github.com/Tencent/ncnn.git
           cd ncnn
@@ -37,18 +38,21 @@ jobs:
           make -j$(nproc)
           sudo make install
 
-      # ===== BUILD REAL-ESRGAN NCNN CPU =====
-      - name: Build Real-ESRGAN (CPU only)
+      # =========================
+      # Build Real-ESRGAN CPU
+      # =========================
+      - name: Build Real-ESRGAN
         run: |
-          git clone --depth 1 https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan.git realesrgan
-          cd realesrgan
+          git clone --depth 1 https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan.git
+          cd Real-ESRGAN-ncnn-vulkan/src
           mkdir build && cd build
-          cmake .. \
-            -DNCNN_VULKAN=OFF
+          cmake .. -DNCNN_VULKAN=OFF
           make -j$(nproc)
-          cp realesrgan-ncnn-vulkan ../../realesrgan-cpu
+          cp realesrgan-ncnn-vulkan ../../../realesrgan-cpu
 
-      # ===== DOWNLOAD MODEL =====
+      # =========================
+      # Download model
+      # =========================
       - name: Download model
         run: |
           mkdir -p models
@@ -57,13 +61,14 @@ jobs:
           wget -O models/RealESRGAN_x4plus.bin \
             https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.bin
 
-      # ===== UPSCALE =====
+      # =========================
+      # Upscale
+      # =========================
       - name: Upscale images
         run: |
-          mkdir -p upscaled
           chmod +x realesrgan-cpu
+          mkdir -p upscaled
           for img in images/*; do
-            echo "Upscaling $img"
             ./realesrgan-cpu \
               -i "$img" \
               -o "upscaled/$(basename "$img")" \
@@ -73,9 +78,10 @@ jobs:
               -g -1
           done
 
-      # ===== UPLOAD =====
-      - name: Upload result
-        uses: actions/upload-artifact@v4
+      # =========================
+      # Upload result
+      # =========================
+      - uses: actions/upload-artifact@v4
         with:
           name: upscaled-images
           path: upscaled/
