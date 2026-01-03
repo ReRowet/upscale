@@ -1,0 +1,35 @@
+name: cpu-upscale-4x
+
+on:
+  push:
+    paths:
+      - "images/**"
+
+jobs:
+  upscale:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Real-ESRGAN
+        run: |
+          wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.3.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
+          unzip realesrgan-ncnn-vulkan-*.zip
+
+      - name: Upscale batch
+        run: |
+          mkdir -p upscaled
+          for img in images/*; do
+            ./realesrgan-ncnn-vulkan \
+              -i "$img" \
+              -o "upscaled/$(basename "$img")" \
+              -n realesrgan-x4plus \
+              -s 4
+          done
+          rm -rf images/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upscaled-4x
+          path: upscaled/
