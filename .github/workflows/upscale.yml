@@ -1,48 +1,53 @@
-name: Real-ESRGAN CPU Test
+name: Real-ESRGAN CPU Upscale
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
     paths:
       - images/**
 
 jobs:
-  test:
+  upscale:
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Debug workspace
+      - name: Show files
         run: |
           pwd
           ls -lah
-          ls -lah images || echo "NO images folder"
+          ls -lah images || echo "images folder not found"
 
-      - name: Download Real-ESRGAN binary
+      - name: Download Real-ESRGAN binary (v0.2.5.0)
         run: |
-          wget -O realesrgan.zip https://github.com/xinntao/Real-ESRGAN/releases/download/v0.3.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
+          wget -O realesrgan.zip https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
           unzip realesrgan.zip
           chmod +x realesrgan-ncnn-vulkan
 
       - name: Download model
         run: |
           mkdir -p models
-          wget -O models/RealESRGAN_x4plus.param https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.param
-          wget -O models/RealESRGAN_x4plus.bin https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.bin
+          wget -O models/RealESRGAN_x4plus.param https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus.param
+          wget -O models/RealESRGAN_x4plus.bin https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus.bin
 
-      - name: Upscale
+      - name: Upscale images (CPU)
         run: |
           mkdir -p upscaled
           for img in images/*; do
-            ./realesrgan-ncnn-vulkan -i "$img" -o "upscaled/$(basename "$img")" -n RealESRGAN_x4plus -s 4 -m models -g -1
+            echo "Upscaling $img"
+            ./realesrgan-ncnn-vulkan \
+              -i "$img" \
+              -o "upscaled/$(basename "$img")" \
+              -n RealESRGAN_x4plus \
+              -s 4 \
+              -m models \
+              -g -1
           done
 
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: upscaled
+          name: upscaled-images
           path: upscaled/
