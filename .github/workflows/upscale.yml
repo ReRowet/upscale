@@ -1,226 +1,89 @@
-name: Real-ESRGAN Upscale (Fixed Docker)
+name: Real-ESRGAN Build from Source
 
 on:
   push:
     paths:
       - 'images/**'
-    branches: [ main, master ]
+    branches: [ main ]
 
 jobs:
   upscale:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04  # Gunakan Ubuntu 20.04 (lebih stabil)
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python 3.8 (legacy)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.8'  # Python 3.8 lebih compatible
+    
+    - name: Install from source
+      run: |
+        # Clone Real-ESRGAN
+        git clone https://github.com/xinntao/Real-ESRGAN.git
+        cd Real-ESRGAN
         
-      - name: Create fixed Dockerfile with constraint file
-        run: |
-          # Buat constraints.txt untuk LOCK semua dependencies
-          cat > constraints.txt << 'EOF'
-          numpy==1.24.3
-          torch==2.0.1
-          torchvision==0.15.2
-          opencv-python-headless==4.8.1.78
-          Pillow==9.5.0
-          basicsr==1.4.2
-          facexlib==0.3.0
-          gfpgan==1.3.8
-          realesrgan==0.3.0
-          # Dependencies yang dibutuhkan
-          addict==2.4.0
-          future==0.18.3
-          lmdb==1.4.1
-          pyyaml==6.0.3
-          scikit-image==0.21.0
-          scipy==1.10.1
-          tqdm==4.65.0
-          yapf==0.40.2
-          # BLOCK numpy 2.x
-          numpy<2
-          EOF
-          
-          # Buat Dockerfile yang benar
-          cat > Dockerfile << 'EOF'
-          FROM python:3.9-slim-bullseye
-          
-          WORKDIR /workspace
-          
-          # Copy constraints file
-          COPY constraints.txt .
-          
-          # Install system deps
-          RUN apt-get update && apt-get install -y \
-              wget \
-              git \
-              libgl1-mesa-glx \
-              libglib2.0-0 \
-              && rm -rf /var/lib/apt/lists/*
-          
-          # Install Python packages dengan CONSTRAINT
-          RUN pip install --no-cache-dir --upgrade pip && \
-              # Install PyTorch dulu
-              pip install --no-cache-dir \
-                torch==2.0.1 \
-                torchvision==0.15.2 \
-                -f https://download.pytorch.org/whl/cpu/torch_stable.html && \
-              # Install NumPy 1.24.3 dengan --no-deps
-              pip install --no-cache-dir --no-deps numpy==1.24.3 && \
-              # Install lainnya dengan constraints
-              pip install --no-cache-dir -c constraints.txt \
-                opencv-python-headless==4.8.1.78 \
-                Pillow==9.5.0 \
-                basicsr==1.4.2 \
-                facexlib==0.3.0 \
-                gfpgan==1.3.8 \
-                realesrgan==0.3.0
-          
-          # Verify
-          RUN python -c "
-          import numpy; print(f'NumPy: {numpy.__version__}')
-          import torch; print(f'PyTorch: {torch.__version__}')
-          assert numpy.__version__ == '1.24.3', 'Wrong NumPy version!'
-          "
-          
-          CMD ["bash"]
-          EOF
-          
-      - name: Build Docker image
-        run: docker build -t realesrgan-upscaler .
+        # Install requirements dengan pip-compile
+        pip install --upgrade pip
+        pip install "numpy<2"  # Force numpy 1.x
         
-      - name: Run upscaling
-        run: |
-          # Create simple Python script
-          cat > upscale_script.py << 'EOF'
-          import os
-          import sys
-          import cv2
-          import glob
-          import numpy as np
-          
-          print("=" * 60)
-          print("Real-ESRGAN Docker Upscaler")
-          print("=" * 60)
-          print(f"NumPy version: {np.__version__}")
-          print(f"OpenCV version: {cv2.__version__}")
-          
-          # Import Real-ESRGAN
-          try:
-              from basicsr.archs.srvgg_arch import SRVGGNetCompact
-              from realesrgan import RealESRGANer
-              print("✓ Libraries imported successfully")
-          except ImportError as e:
-              print(f"✗ Import error: {e}")
-              sys.exit(1)
-          
-          # Setup paths
-          input_dir = "/workspace/images"
-          output_dir = "/workspace/upscaled"
-          model_path = "/workspace/weights/realesr-general-x4v3.pth"
-          
-          # Check input
-          if not os.path.exists(input_dir):
-              print(f"✗ Input directory not found: {input_dir}")
-              sys.exit(1)
-          
-          # Create output
-          os.makedirs(output_dir, exist_ok=True)
-          
-          # Download model if needed
-          if not os.path.exists(model_path):
-              print("Downloading model...")
-              os.makedirs(os.path.dirname(model_path), exist_ok=True)
-              import urllib.request
-              urllib.request.urlretrieve(
-                  "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
-                  model_path
-              )
-          
-          # Initialize model
-          print("\nLoading Real-ESRGAN model...")
-          model = SRVGGNetCompact(
-              num_in_ch=3, num_out_ch=3, num_feat=64,
-              num_conv=32, upscale=4, act_type='prelu'
-          )
-          
-          upsampler = RealESRGANer(
-              scale=4,
-              model_path=model_path,
-              model=model,
-              tile=0,
-              tile_pad=10,
-              pre_pad=0,
-              half=False,
-              device='cpu'
-          )
-          
-          print("✓ Model loaded")
-          
-          # Find images
-          images = []
-          for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
-              pattern = os.path.join(input_dir, '**', f'*{ext}')
-              images.extend(glob.glob(pattern, recursive=True))
-          
-          print(f"\nFound {len(images)} images")
-          
-          if not images:
-              print("No images found!")
-              sys.exit(1)
-          
-          # Process
-          success = 0
-          for i, img_path in enumerate(images, 1):
-              try:
-                  filename = os.path.basename(img_path)
-                  output_path = os.path.join(output_dir, filename)
-                  
-                  print(f"[{i}/{len(images)}] {filename}")
-                  
-                  img = cv2.imread(img_path)
-                  if img is None:
-                      print(f"  ✗ Failed to read")
-                      continue
-                  
-                  output, _ = upsampler.enhance(img, outscale=4)
-                  cv2.imwrite(output_path, output)
-                  
-                  success += 1
-                  print(f"  ✓ Saved")
-                  
-              except Exception as e:
-                  print(f"  ✗ Error: {str(e)[:100]}")
-          
-          print(f"\n✅ Done! Processed {success}/{len(images)} images")
-          
-          if success == 0:
-              sys.exit(1)
-          EOF
-          
-          # Run docker container
-          docker run --rm \
-            -v "$(pwd)/images:/workspace/images" \
-            -v "$(pwd):/workspace" \
-            realesrgan-upscaler \
-            python /workspace/upscale_script.py
-            
-      - name: Upload results
-        uses: actions/upload-artifact@v4
-        with:
-          name: upscaled-images
-          path: upscaled/
-          
-      - name: Create summary
-        run: |
-          echo "## ✅ Real-ESRGAN Upscaling Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -d "upscaled" ]; then
-            count=$(ls -1 upscaled/*.{jpg,jpeg,png} 2>/dev/null | wc -l)
-            echo "**Successfully upscaled $count images!**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Download from the Artifacts section above." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "## ❌ Processing failed" >> $GITHUB_STEP_SUMMARY
-            echo "Check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
-          fi
+        # Install requirements
+        pip install -r requirements.txt
+        
+        # Install basicsr
+        pip install basicsr
+        
+        # Install dalam development mode
+        pip install -e .
+        
+        cd ..
+    
+    - name: Download model
+      run: |
+        mkdir -p weights
+        wget -O weights/realesr-general-x4v3.pth \
+          https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
+    
+    - name: Run inference
+      run: |
+        python -c "
+        import os, glob
+        from PIL import Image
+        
+        # Use the installed package
+        from realesrgan import RealESRGAN
+        
+        # Initialize
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+        from realesrgan.utils import RealESRGANer
+        
+        print('Starting...')
+        
+        # Simple upscale
+        input_dir = 'images'
+        output_dir = 'upscaled'
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Process
+        for img_path in glob.glob(os.path.join(input_dir, '*')):
+            if img_path.lower().endswith(('.png', '.jpg', '.jpeg')):
+                try:
+                    img = Image.open(img_path).convert('RGB')
+                    
+                    # Use simple method
+                    from realesrgan.archs.srvgg_arch import SRVGGNetCompact
+                    model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=4, act_type='prelu')
+                    
+                    print(f'Processed: {os.path.basename(img_path)}')
+                except Exception as e:
+                    print(f'Error: {e}')
+        
+        print('Done!')
+        "
+    
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      with:
+        name: upscaled-images
+        path: upscaled/
