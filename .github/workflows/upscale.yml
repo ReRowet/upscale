@@ -8,10 +8,6 @@ on:
   
   workflow_dispatch:
     inputs:
-      batch_name:
-        description: 'Process specific batch folder'
-        required: false
-        default: ''
       scale:
         description: 'Upscale factor'
         required: false
@@ -31,26 +27,25 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with: 
-          python-version: "3.10"  # Gunakan 3.10 untuk kompatibilitas lebih baik
+          python-version: "3.10"
           
-      - name: Cache pip packages
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-            
-      - name: Install Python dependencies
+      - name: Install dependencies (COMPATIBLE VERSIONS)
         run: |
           python -m pip install --upgrade pip
+          
           # Install PyTorch untuk CPU
           pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
-          # Install Real-ESRGAN dan dependencies
-          pip install realesrgan==0.3.0
-          pip install basicsr==1.4.2
-          pip install pillow>=9.0.0
-          pip install numpy==1.24.3  # Versi spesifik untuk kompatibilitas
+          
+          # Install Real-ESRGAN dengan versi yang kompatibel
+          pip install git+https://github.com/xinntao/Real-ESRGAN.git
+          
+          # Install dependencies lainnya
+          pip install basicsr>=1.4.2
+          pip install facexlib>=0.3.0
+          pip install gfpgan>=1.3.8
+          pip install Pillow>=9.0.0
+          pip install numpy>=1.24.0
+          pip install opencv-python-headless>=4.8.0
           
       - name: Download Real-ESRGAN model
         run: |
@@ -63,65 +58,142 @@ jobs:
             echo "Model already exists, skipping download."
           fi
           
-      - name: Create upscale script
+      - name: Create upscale script (UPDATED API)
         run: |
-          cat > upscale_simple.py << 'EOF'
+          cat > upscale_script.py << 'EOF'
           import os
           import sys
+          import argparse
           from pathlib import Path
           
+          import cv2
           import torch
+          import numpy as np
           from PIL import Image
-          from realesrgan import RealESRGAN
+          
+          # Import Real-ESRGAN utilities
+          sys.path.insert(0, '/opt/hostedtoolcache/Python/3.10.19/x64/lib/python3.10/site-packages')
+          
+          try:
+              from basicsr.archs.rrdbnet_arch import RRDBNet
+              from realesrgan import RealESRGANer
+              from realesrgan.archs.srvgg_arch import SRVGGNetCompact
+          except ImportError as e:
+              print(f"Import error: {e}")
+              print("Trying alternative import...")
+              try:
+                  # Alternatif untuk versi berbeda
+                  import realesrgan
+                  from realesrgan.utils import RealESRGANer
+              except:
+                  print("Please install Real-ESRGAN properly")
+                  sys.exit(1)
           
           def main():
-              # Setup
-              input_dir = Path("images")
-              output_dir = Path("upscaled")
-              output_dir.mkdir(exist_ok=True)
+              parser = argparse.ArgumentParser()
+              parser.add_argument('--input', type=str, default='images', help='Input folder')
+              parser.add_argument('--output', type=str, default='upscaled', help='Output folder')
+              parser.add_argument('--model', type=str, default='weights/realesr-general-x4v3.pth', help='Model path')
+              parser.add_argument('--scale', type=int, default=4, help='Upscale factor')
+              parser.add_argument('--tile', type=int, default=0, help='Tile size, 0 for no tile')
+              parser.add_argument('--tile_pad', type=int, default=10, help='Tile padding')
+              parser.add_argument('--pre_pad', type=int, default=0, help='Pre padding size')
               
-              # Load model
-              device = torch.device("cpu")
-              print("Loading Real-ESRGAN model...")
-              model = RealESRGAN(device, scale=4)
-              model.load_weights("weights/realesr-general-x4v3.pth")
-              print("Model loaded successfully!")
+              args = parser.parse_args()
               
-              # Process images
+              # Setup paths
+              input_dir = Path(args.input)
+              output_dir = Path(args.output)
+              output_dir.mkdir(parents=True, exist_ok=True)
+              
+              if not input_dir.exists():
+                  print(f"Error: Input directory '{input_dir}' does not exist!")
+                  sys.exit(1)
+              
+              # Determine model type
+              model_name = os.path.basename(args.model)
+              if 'realesr-general-x4v3' in model_name:
+                  model = SRVGGNetCompact(
+                      num_in_ch=3, num_out_ch=3, num_feat=64, 
+                      num_conv=32, upscale=4, act_type='prelu'
+                  )
+                  netscale = 4
+              elif 'realesr-general-wdn-x4v3' in model_name:
+                  model = SRVGGNetCompact(
+                      num_in_ch=3, num_out_ch=3, num_feat=64, 
+                      num_conv=32, upscale=4, act_type='prelu'
+                  )
+                  netscale = 4
+              elif 'realesr-animevideov3' in model_name:
+                  model = SRVGGNetCompact(
+                      num_in_ch=3, num_out_ch=3, num_feat=64, 
+                      num_conv=16, upscale=4, act_type='prelu'
+                  )
+                  netscale = 4
+              else:
+                  # Default to RRDBNet arch
+                  model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=args.scale)
+                  netscale = args.scale
+              
+              # Initialize upsampler
+              upsampler = RealESRGANer(
+                  scale=netscale,
+                  model_path=args.model,
+                  model=model,
+                  tile=args.tile,
+                  tile_pad=args.tile_pad,
+                  pre_pad=args.pre_pad,
+                  half=False,  # CPU doesn't support half precision
+                  device=torch.device('cpu')
+              )
+              
+              # Supported image extensions
+              image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+              
               processed = 0
               failed = 0
               
-              # Recursive search for images
-              image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+              print(f"Starting upscaling from '{input_dir}' to '{output_dir}'")
+              print(f"Using model: {model_name}")
               
+              # Process all images
               for ext in image_extensions:
                   for image_path in input_dir.rglob(f"*{ext}"):
                       try:
-                          # Calculate output path preserving structure
                           rel_path = image_path.relative_to(input_dir)
                           output_path = output_dir / rel_path
                           output_path.parent.mkdir(parents=True, exist_ok=True)
                           
                           print(f"Processing: {rel_path}")
                           
-                          # Load and upscale image
-                          img = Image.open(image_path).convert("RGB")
-                          sr = model.predict(img)
+                          # Read image
+                          img = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+                          if img is None:
+                              print(f"  Warning: Could not read image {image_path}")
+                              failed += 1
+                              continue
                           
-                          # Save with same format
-                          sr.save(output_path)
+                          # Upscale image
+                          output, _ = upsampler.enhance(img, outscale=args.scale)
+                          
+                          # Save image
+                          cv2.imwrite(str(output_path), output)
                           processed += 1
                           
+                          print(f"  ✓ Saved: {output_path}")
+                          
                       except Exception as e:
-                          print(f"Error processing {image_path}: {e}")
+                          print(f"  ✗ Error processing {image_path}: {str(e)}")
                           failed += 1
               
-              print(f"\nProcessing complete!")
+              print(f"\n{'='*50}")
+              print(f"Processing Complete!")
               print(f"Successfully upscaled: {processed} images")
               print(f"Failed: {failed} images")
+              print(f"{'='*50}")
               
-              if processed == 0 and failed == 0:
-                  print("No images found in 'images' directory!")
+              if processed == 0:
+                  print("No images were processed. Check your input directory.")
                   sys.exit(1)
           
           if __name__ == "__main__":
@@ -131,39 +203,65 @@ jobs:
       - name: Run upscaling
         run: |
           echo "Starting upscaling process..."
-          python upscale_simple.py
+          python upscale_script.py \
+            --input "images" \
+            --output "upscaled" \
+            --model "weights/realesr-general-x4v3.pth" \
+            --scale 4 \
+            --tile 0
           
       - name: Upload upscaled images
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-images
           path: upscaled/
+          retention-days: 30
           
       - name: Create summary
         run: |
           echo "## 🖼️ Image Upscaling Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Statistics" >> $GITHUB_STEP_SUMMARY
-          echo "- **Workflow**: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Run ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Triggered by**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Count files
           if [ -d "upscaled" ]; then
-            file_count=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | wc -l)
-            echo "- **Upscaled Images**: $file_count" >> $GITHUB_STEP_SUMMARY
+            # Count all image files
+            total_files=$(find upscaled -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.bmp" -o -iname "*.webp" \) | wc -l)
+            
+            echo "### 📊 Processing Statistics" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total Upscaled Images**: $total_files" >> $GITHUB_STEP_SUMMARY
+            echo "- **Model Used**: RealESRGAN general-x4v3" >> $GITHUB_STEP_SUMMARY
+            echo "- **Scale Factor**: 4x" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             
-            # List directories
+            # Show folder structure
             echo "### 📁 Output Structure" >> $GITHUB_STEP_SUMMARY
             find upscaled -type d | sort | while read dir; do
-              count=$(find "$dir" -maxdepth 1 -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | wc -l)
+              count=$(find "$dir" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) | wc -l)
               if [ $count -gt 0 ]; then
                 rel_dir=${dir#upscaled/}
+                if [ -z "$rel_dir" ]; then
+                  rel_dir="root"
+                fi
                 echo "- **$rel_dir**: $count images" >> $GITHUB_STEP_SUMMARY
               fi
             done
+            
+            # List first few files as example
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📋 Sample Files" >> $GITHUB_STEP_SUMMARY
+            find upscaled -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) | head -5 | while read file; do
+              filename=$(basename "$file")
+              echo "- $filename" >> $GITHUB_STEP_SUMMARY
+            done
+            
+            if [ $total_files -gt 5 ]; then
+              echo "- ... and $(($total_files - 5)) more" >> $GITHUB_STEP_SUMMARY
+            fi
+            
           else
-            echo "- **Upscaled Images**: 0 (No images processed)" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ No Output Generated" >> $GITHUB_STEP_SUMMARY
+            echo "The upscaled folder was not created. Check the logs for errors." >> $GITHUB_STEP_SUMMARY
           fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Download upscaled images from the Artifacts section." >> $GITHUB_STEP_SUMMARY
