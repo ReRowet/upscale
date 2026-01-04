@@ -1,4 +1,4 @@
-name: Real-ESRGAN Upscale (Clean Install)
+name: Real-ESRGAN From Source
 
 on:
   push:
@@ -8,243 +8,270 @@ on:
 
 jobs:
   upscale:
-    runs-on: ubuntu-22.04  # Ubuntu 22.04 lebih stabil
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Setup Python 3.9 (lebih compatible)
+    - name: Setup Python 3.9 with fresh environment
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
         
-    - name: Create clean virtual environment
+    - name: Install system dependencies
       run: |
-        python -m venv venv
-        source venv/bin/activate
+        sudo apt-get update
+        sudo apt-get install -y \
+          wget \
+          git \
+          build-essential \
+          cmake \
+          libopenblas-dev \
+          liblapack-dev \
+          libx11-dev \
+          libgl1-mesa-glx
         
-        # HAPUS SEMUA package system
-        pip uninstall -y numpy opencv-python opencv-python-headless torch torchvision || true
+    - name: Create completely fresh environment
+      run: |
+        # Hapus semua package system
+        pip freeze | xargs pip uninstall -y 2>/dev/null || true
         
-        # INSTALL numpy 1.x DENGAN FORCE
-        pip install --no-deps "numpy==1.24.3"
-        pip install "numpy==1.24.3" --force-reinstall
-        
-        # Verifikasi
-        python -c "import numpy; print(f'NumPy: {numpy.__version__}'); assert numpy.__version__ == '1.24.3'"
-        
-        # Install PyTorch
-        pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
-        
-        # Install basicsr dan realesrgan DARI SOURCE
-        pip install opencv-python-headless==4.8.1.78
-        pip install Pillow==9.5.0
-        
-        # Clone basicsr dan install
-        git clone https://github.com/xinntao/BasicSR.git
-        cd BasicSR
-        pip install -e .
+        # Build dan install NumPy dari source dengan versi 1.24.3
+        echo "Building NumPy 1.24.3 from source..."
+        wget https://github.com/numpy/numpy/archive/refs/tags/v1.24.3.tar.gz
+        tar -xzf v1.24.3.tar.gz
+        cd numpy-1.24.3
+        pip install . --no-binary numpy
         cd ..
         
-        # Install realesrgan
-        pip install realesrgan==0.3.0
+        # Verifikasi
+        python -c "import numpy; print(f'NumPy version: {numpy.__version__}'); assert numpy.__version__ == '1.24.3'"
         
-        echo "VIRTUAL_ENV=$(pwd)/venv" >> $GITHUB_ENV
-        echo "$(pwd)/venv/bin" >> $GITHUB_PATH
-        
-    - name: Create simplified upscale script (NO basicsr import)
+    - name: Build PyTorch from source (CPU only)
       run: |
-        cat > upscale_simple.py << 'EOF'
+        echo "Installing PyTorch from wheel..."
+        # Install PyTorch CPU dari wheel yang sudah ada
+        pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
+        
+        # Verifikasi
+        python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print('CUDA available:', torch.cuda.is_available())"
+        
+    - name: Build OpenCV from source
+      run: |
+        echo "Installing OpenCV..."
+        pip install opencv-python-headless==4.8.1.78
+        
+    - name: Build BasicSR from source
+      run: |
+        echo "Building BasicSR from source..."
+        git clone https://github.com/xinntao/BasicSR.git
+        cd BasicSR
+        
+        # Install requirements
+        pip install -r requirements.txt
+        
+        # Install in development mode
+        pip install -e .
+        
+        cd ..
+        
+    - name: Install Real-ESRGAN
+      run: |
+        echo "Installing Real-ESRGAN..."
+        pip install realesrgan==0.3.0
+        pip install Pillow==9.5.0
+        
+    - name: Create ultra-simple upscale script
+      run: |
+        cat > upscale_ultra.py << 'EOF'
         """
-        Simplified Real-ESRGAN upscaler
-        Avoids problematic imports
+        Ultra Simple Real-ESRGAN Upscaler
+        Direct implementation with minimal imports
         """
         import os
         import sys
         import glob
         import traceback
-        from pathlib import Path
         
-        # Add venv to path
-        venv_path = os.path.join(os.path.dirname(__file__), 'venv', 'lib', 'python3.9', 'site-packages')
-        sys.path.insert(0, venv_path)
+        print("=" * 70)
+        print("ULTRA SIMPLE Real-ESRGAN Upscaler")
+        print("=" * 70)
         
-        print("=" * 60)
-        print("Real-ESRGAN Simplified Upscaler")
-        print("=" * 60)
+        # Debug: Check what's available
+        import subprocess
+        result = subprocess.run([sys.executable, "-m", "pip", "list"], capture_output=True, text=True)
+        print("Installed packages:")
+        print(result.stdout[:500])
         
-        # Try basic imports
+        # Try to import
         try:
             import numpy as np
+            print(f"✓ NumPy: {np.__version__}")
+            
             import torch
-            from PIL import Image
-            import cv2
-            print(f"✓ Basic imports: NumPy {np.__version__}, PyTorch {torch.__version__}")
-        except ImportError as e:
-            print(f"✗ Basic import error: {e}")
-            sys.exit(1)
-        
-        # Try to import Real-ESRGAN directly
-        try:
-            # Try different import methods
+            print(f"✓ PyTorch: {torch.__version__}")
+            
+            # Try to import Real-ESRGAN directly
+            import importlib.util
+            
+            # Method 1: Try direct import
             try:
                 from realesrgan import RealESRGAN
                 print("✓ Imported RealESRGAN class")
-                USE_CLASS = True
+                METHOD = "class"
             except:
-                # Alternative import
+                # Method 2: Try basic imports
                 from basicsr.archs.srvgg_arch import SRVGGNetCompact
                 from realesrgan import RealESRGANer
-                print("✓ Imported RealESRGANer")
-                USE_CLASS = False
+                print("✓ Imported SRVGGNetCompact and RealESRGANer")
+                METHOD = "upsampler"
+                
         except Exception as e:
-            print(f"✗ Real-ESRGAN import error: {e}")
-            print("Trying manual approach...")
+            print(f"✗ Import failed: {e}")
             traceback.print_exc()
             sys.exit(1)
         
-        def upscale_with_class(img_path, output_path, model_path, device='cpu', scale=4):
-            """Upscale using RealESRGAN class"""
-            try:
-                device = torch.device(device)
-                model = RealESRGAN(device, scale=scale)
-                model.load_weights(model_path)
-                
-                img = Image.open(img_path).convert('RGB')
-                sr_img = model.predict(img)
-                sr_img.save(output_path)
-                return True
-            except Exception as e:
-                print(f"  Class method error: {e}")
+        def upscale_images():
+            """Main upscaling function"""
+            input_dir = "images"
+            output_dir = "upscaled"
+            model_path = "models/realesr-general-wdn-x4v3.pth"
+            
+            # Check directories
+            if not os.path.exists(input_dir):
+                print(f"✗ Input directory '{input_dir}' not found!")
                 return False
-        
-        def upscale_with_upsampler(img_path, output_path, model_path, scale=4):
-            """Upscale using RealESRGANer"""
-            try:
-                model = SRVGGNetCompact(
-                    num_in_ch=3, num_out_ch=3, num_feat=64,
-                    num_conv=32, upscale=scale, act_type='prelu'
-                )
                 
-                upsampler = RealESRGANer(
-                    scale=scale,
-                    model_path=model_path,
-                    model=model,
-                    tile=0,
-                    tile_pad=10,
-                    pre_pad=0,
-                    half=False,
-                    device='cpu'
-                )
-                
-                img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
-                if img is None:
-                    return False
-                
-                output, _ = upsampler.enhance(img, outscale=scale)
-                cv2.imwrite(str(output_path), output)
-                return True
-            except Exception as e:
-                print(f"  Upsampler error: {e}")
+            if not os.path.exists(model_path):
+                print(f"✗ Model '{model_path}' not found!")
+                print("Please download the model and place it in models/ folder")
                 return False
-        
-        def main():
-            import argparse
             
-            parser = argparse.ArgumentParser()
-            parser.add_argument('--input', default='images', help='Input directory')
-            parser.add_argument('--output', default='upscaled', help='Output directory')
-            parser.add_argument('--model', default='models/realesr-general-wdn-x4v3.pth', help='Model path')
-            parser.add_argument('--scale', type=int, default=4, help='Upscale factor')
-            
-            args = parser.parse_args()
-            
-            # Setup paths
-            input_dir = Path(args.input)
-            output_dir = Path(args.output)
-            model_path = Path(args.model)
-            
-            if not input_dir.exists():
-                print(f"✗ Input directory not found: {input_dir}")
-                return
-            
-            if not model_path.exists():
-                print(f"✗ Model not found: {model_path}")
-                print("  Make sure model is in models/ folder")
-                return
-            
-            output_dir.mkdir(parents=True, exist_ok=True)
+            os.makedirs(output_dir, exist_ok=True)
             
             print(f"\nInput: {input_dir}")
             print(f"Output: {output_dir}")
-            print(f"Model: {model_path.name}")
-            print(f"Scale: {args.scale}x")
+            print(f"Model: {model_path}")
             
             # Find images
             images = []
             for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
-                pattern = str(input_dir / '**' / f'*{ext}')
+                pattern = os.path.join(input_dir, '**', f'*{ext}')
                 images.extend(glob.glob(pattern, recursive=True))
+                pattern = os.path.join(input_dir, '**', f'*{ext.upper()}')
+                images.extend(glob.glob(pattern, recursive=True))
+            
+            images = list(set(images))
             
             print(f"\nFound {len(images)} images")
             
             if not images:
                 print("✗ No images found!")
-                return
+                return False
             
-            # Process images
-            success = 0
-            
-            for i, img_file in enumerate(images, 1):
-                img_path = Path(img_file)
-                rel_path = img_path.relative_to(input_dir) if input_dir in img_path.parents else img_path.name
-                output_path = output_dir / rel_path
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                print(f"[{i}/{len(images)}] {rel_path}")
-                
-                # Try method 1 (RealESRGAN class)
-                if USE_CLASS:
-                    if upscale_with_class(img_path, output_path, str(model_path), scale=args.scale):
-                        success += 1
-                        print(f"  ✓ Saved")
-                        continue
-                
-                # Try method 2 (RealESRGANer)
-                if not USE_CLASS or success == 0:
-                    if upscale_with_upsampler(img_path, output_path, str(model_path), scale=args.scale):
-                        success += 1
-                        print(f"  ✓ Saved")
-                    else:
-                        print(f"  ✗ Failed")
-            
-            # Summary
-            print(f"\n{'='*60}")
-            print(f"RESULT: {success}/{len(images)} images upscaled")
-            print(f"{'='*60}")
-            
-            if success == 0:
-                print("\n✗ No images processed successfully!")
-                sys.exit(1)
-            
-            print("\n✅ Done!")
-            
-            # Create info file
-            info_file = output_dir / "info.txt"
-            with open(info_file, 'w') as f:
-                f.write(f"Model: {model_path.name}\n")
-                f.write(f"Scale: {args.scale}x\n")
-                f.write(f"Images: {success}/{len(images)}\n")
+            # Initialize model based on method
+            if METHOD == "class":
+                print("\nInitializing RealESRGAN class...")
+                try:
+                    device = torch.device('cpu')
+                    model = RealESRGAN(device, scale=4)
+                    model.load_weights(model_path)
+                    print("✓ Model loaded (class method)")
+                    
+                    # Process images
+                    import cv2
+                    from PIL import Image
+                    
+                    success = 0
+                    for i, img_path in enumerate(images, 1):
+                        try:
+                            filename = os.path.basename(img_path)
+                            output_path = os.path.join(output_dir, filename)
+                            
+                            print(f"[{i}/{len(images)}] {filename}")
+                            
+                            img = Image.open(img_path).convert('RGB')
+                            sr_img = model.predict(img)
+                            sr_img.save(output_path)
+                            
+                            success += 1
+                            print(f"  ✓ Saved")
+                            
+                        except Exception as e:
+                            print(f"  ✗ Error: {str(e)[:100]}")
+                    
+                    print(f"\n✅ Successfully upscaled {success}/{len(images)} images")
+                    return success > 0
+                    
+                except Exception as e:
+                    print(f"✗ Class method failed: {e}")
+                    return False
+                    
+            elif METHOD == "upsampler":
+                print("\nInitializing RealESRGANer...")
+                try:
+                    import cv2
+                    
+                    model = SRVGGNetCompact(
+                        num_in_ch=3, num_out_ch=3, num_feat=64,
+                        num_conv=32, upscale=4, act_type='prelu'
+                    )
+                    
+                    upsampler = RealESRGANer(
+                        scale=4,
+                        model_path=model_path,
+                        model=model,
+                        tile=0,
+                        tile_pad=10,
+                        pre_pad=0,
+                        half=False,
+                        device='cpu'
+                    )
+                    
+                    print("✓ Model loaded (upsampler method)")
+                    
+                    # Process images
+                    success = 0
+                    for i, img_path in enumerate(images, 1):
+                        try:
+                            filename = os.path.basename(img_path)
+                            output_path = os.path.join(output_dir, filename)
+                            
+                            print(f"[{i}/{len(images)}] {filename}")
+                            
+                            img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                            if img is None:
+                                print(f"  ✗ Failed to read")
+                                continue
+                            
+                            output, _ = upsampler.enhance(img, outscale=4)
+                            cv2.imwrite(output_path, output)
+                            
+                            success += 1
+                            print(f"  ✓ Saved")
+                            
+                        except Exception as e:
+                            print(f"  ✗ Error: {str(e)[:100]}")
+                    
+                    print(f"\n✅ Successfully upscaled {success}/{len(images)} images")
+                    return success > 0
+                    
+                except Exception as e:
+                    print(f"✗ Upsampler method failed: {e}")
+                    traceback.print_exc()
+                    return False
         
         if __name__ == "__main__":
-            main()
+            success = upscale_images()
+            if not success:
+                sys.exit(1)
         EOF
         
     - name: Run upscaling
       run: |
-        source venv/bin/activate
-        python upscale_simple.py
+        echo "Starting upscaling..."
+        python upscale_ultra.py
         
     - name: Upload results
       uses: actions/upload-artifact@v4
@@ -254,15 +281,22 @@ jobs:
         
     - name: Create summary
       run: |
-        echo "## 📊 Upscaling Results" >> $GITHUB_STEP_SUMMARY
+        echo "## 🎉 Upscaling Complete" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        if [ -d "upscaled" ]; then
+        if [ -d "upscaled" ] && [ "$(ls -A upscaled 2>/dev/null)" ]; then
           count=$(ls -1 upscaled/*.{jpg,jpeg,png} 2>/dev/null | wc -l)
-          echo "✅ **Successfully upscaled $count images**" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Success!" >> $GITHUB_STEP_SUMMARY
+          echo "- **Images processed**: $count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Method**: Built from source" >> $GITHUB_STEP_SUMMARY
+          echo "- **NumPy version**: 1.24.3 (built from source)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Download from Artifacts section." >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📁 Output files:" >> $GITHUB_STEP_SUMMARY
+          ls -1 upscaled/*.{jpg,jpeg,png} 2>/dev/null | head -5 | xargs -I {} basename {} | while read file; do
+            echo "- $file" >> $GITHUB_STEP_SUMMARY
+          done
         else
-          echo "❌ **Processing failed**" >> $GITHUB_STEP_SUMMARY
-          echo "Check workflow logs for details." >> $GITHUB_STEP_SUMMARY
+          echo "### ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "Check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
         fi
