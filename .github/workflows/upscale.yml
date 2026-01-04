@@ -1,62 +1,148 @@
-name: Real-ESRGAN CPU Upscale (Stable)
+name: Real-ESRGAN Batch Upscale
 
 on:
-  workflow_dispatch:
   push:
     paths:
-      - "images/**"
+      - 'images/**'           # Trigger saat ada perubahan di folder images
+      - '!images/README.md'   # Kecuali file README
+      - '!images/.gitkeep'    # Kecuali file .gitkeep
+    branches: [ main, master ]
+  
+  # Opsional: Manual trigger dengan parameter
+  workflow_dispatch:
+    inputs:
+      batch_name:
+        description: 'Process specific batch folder (leave empty for all)'
+        required: false
+        default: ''
+      scale:
+        description: 'Upscale factor'
+        required: false
+        default: '4'
+        type: choice
+        options: ['2', '4']
+      cleanup:
+        description: 'Delete input images after processing?'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
 
 jobs:
-  upscale:
+  upscale-batch:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 60  # Timeout 60 menit
+    
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
-
+        with:
+          fetch-depth: 0
+          
+      - name: Detect changed files
+        id: changes
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            images:
+              - 'images/**/*.{jpg,jpeg,png,bmp,tiff,webp}'
+              - 'images/**/*.{JPG,JPEG,PNG,BMP,TIFF,WEBP}'
+              
+      - name: Skip if no images changed
+        if: steps.changes.outputs.images == 'false'
+        run: |
+          echo "No image files changed. Skipping workflow."
+          exit 0
+          
       - name: Setup Python
         uses: actions/setup-python@v5
+        with: 
+          python-version: "3.11"
+          
+      - name: Cache Python packages
+        uses: actions/cache@v3
         with:
-          python-version: "3.10"
-
-      - name: Install dependencies (LOCKED VERSIONS)
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install \
-            numpy==1.26.4 \
-            torch==2.0.1+cpu \
-            torchvision==0.15.2+cpu \
-            -f https://download.pytorch.org/whl/cpu/torch_stable.html
-          pip install realesrgan==0.3.0 basicsr==1.4.2 pillow
-
-      - name: Download Real-ESRGAN model (v0.2.5.0)
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-glx
+          pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install realesrgan basicsr pillow opencv-python-headless tqdm
+          
+      - name: Download model
         run: |
           mkdir -p weights
-          wget -O weights/realesr-general-x4v3.pth \
-            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
-
-      - name: Run upscale (CPU only)
+          if [ ! -f "weights/realesr-general-x4v3.pth" ]; then
+            wget -q -O weights/realesr-general-x4v3.pth \
+              https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
+          fi
+          
+      - name: Run batch upscale
+        id: upscale
+        env:
+          BATCH_NAME: ${{ github.event.inputs.batch_name }}
+          SCALE: ${{ github.event.inputs.scale || '4' }}
+          CLEANUP: ${{ github.event.inputs.cleanup || 'false' }}
         run: |
-          mkdir -p upscaled
-          python << 'EOF'
-          import os
-          import torch
-          from PIL import Image
-          from realesrgan import RealESRGAN
-
-          device = torch.device("cpu")
-          model = RealESRGAN(device, scale=4)
-          model.load_weights("weights/realesr-general-x4v3.pth")
-
-          for file in os.listdir("images"):
-              if file.lower().endswith((".png", ".jpg", ".jpeg")):
-                  img = Image.open(os.path.join("images", file)).convert("RGB")
-                  sr = model.predict(img)
-                  sr.save(os.path.join("upscaled", file))
-          EOF
-
+          python upscale.py \
+            --input "images" \
+            --output "upscaled" \
+            --batch "$BATCH_NAME" \
+            --scale $SCALE \
+            --cleanup $CLEANUP \
+            --log-level INFO
+          
+      - name: Count processed images
+        id: count
+        run: |
+          INPUT_COUNT=$(find images -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.bmp" -o -name "*.webp" | wc -l || echo 0)
+          OUTPUT_COUNT=$(find upscaled -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.bmp" -o -name "*.webp" | wc -l || echo 0)
+          echo "input_count=$INPUT_COUNT" >> $GITHUB_OUTPUT
+          echo "output_count=$OUTPUT_COUNT" >> $GITHUB_OUTPUT
+          
       - name: Upload upscaled images
         uses: actions/upload-artifact@v4
         with:
-          name: upscaled-images
-          path: upscaled
+          name: upscaled-images-${{ github.run_number }}
+          path: |
+            upscaled/**
+            !upscaled/.gitkeep
+          retention-days: 90
+          
+      - name: Create results summary
+        run: |
+          echo "## 📊 Batch Upscale Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Processing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Input Images**: ${{ steps.count.outputs.input_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upscaled Images**: ${{ steps.count.outputs.output_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scale Factor**: ${{ env.SCALE }}x" >> $GITHUB_STEP_SUMMARY
+          echo "- **Model**: RealESRGAN general-x4v3" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # List processed folders
+          echo "### 📁 Processed Folders" >> $GITHUB_STEP_SUMMARY
+          if [ -d "upscaled" ]; then
+            for dir in upscaled/*/; do
+              if [ -d "$dir" ]; then
+                dir_name=$(basename "$dir")
+                count=$(find "$dir" -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" | wc -l)
+                echo "- **$dir_name**: $count images" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+          
+      - name: Commit upscaled images (Optional)
+        if: success()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add upscaled/
+          git commit -m "Upscaled images - Run #${{ github.run_number }}" || echo "No changes to commit"
