@@ -1,4 +1,4 @@
-name: Real-ESRGAN Upscale (Clean Environment)
+name: Real-ESRGAN Upscale (Docker Solution)
 
 on:
   push:
@@ -9,278 +9,154 @@ on:
 jobs:
   upscale:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    
+    container:
+      image: pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+      
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         
-      - name: Setup Python with virtual environment
-        uses: actions/setup-python@v5
-        with: 
-          python-version: "3.10"
-          
-      - name: Create and activate virtual environment
+      - name: Install system dependencies
         run: |
-          python -m venv venv
-          source venv/bin/activate
-          echo "VIRTUAL_ENV=$PWD/venv" >> $GITHUB_ENV
-          echo "$PWD/venv/bin" >> $GITHUB_PATH
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            wget \
+            git \
+            libgl1-mesa-glx \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender-dev \
+            libgomp1
+          rm -rf /var/lib/apt/lists/*
           
-      - name: Install CORE dependencies first (NO OPENCV)
+      - name: Install Python dependencies (WITH NUMPY 1.x)
         run: |
-          source venv/bin/activate
+          # Uninstall numpy 2.x if exists
+          pip uninstall -y numpy || true
           
-          # CLEAN SLATE - Uninstall everything problematic
-          pip uninstall -y numpy opencv-python opencv-python-headless torch torchvision || true
+          # Force install numpy 1.24.3
+          pip install "numpy==1.24.3" --force-reinstall
           
-          # Install numpy 1.x FIRST with NO dependencies
-          pip install --no-deps "numpy==1.24.3"
-          
-          # Verify numpy is correct version
-          python -c "import numpy; print(f'NumPy version: {numpy.__version__}'); assert numpy.__version__.startswith('1.')"
-          
-      - name: Install PyTorch with pinned numpy
-        run: |
-          source venv/bin/activate
-          
-          # Install PyTorch dengan numpy yang sudah terpasang
-          pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu --no-deps
-          pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
-          
-      - name: Install Real-ESRGAN tanpa OpenCV
-        run: |
-          source venv/bin/activate
-          
-          # Install dependencies dasar
-          pip install Pillow==9.5.0
+          # Install other dependencies
           pip install basicsr==1.4.2
           pip install facexlib==0.3.0
           pip install gfpgan==1.3.8
+          pip install opencv-python-headless==4.8.1.78
+          pip install Pillow==9.5.0
           pip install realesrgan==0.3.0
           
-          # Install opencv-python-headless dengan versi lama yang kompatibel
-          pip install "opencv-python-headless<4.7"  # Versi yang lebih lama
+          # Verify installations
+          python -c "
+          import numpy; print(f'NumPy: {numpy.__version__}')
+          import torch; print(f'PyTorch: {torch.__version__}')
+          import cv2; print(f'OpenCV: {cv2.__version__}')
+          "
           
       - name: Download model
         run: |
-          source venv/bin/activate
           mkdir -p weights
           wget -q -O weights/realesr-general-x4v3.pth \
             https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
           
-      - name: Create upscale script (PIL ONLY - NO OPENCV)
+      - name: Create simple inference script
         run: |
-          cat > upscale_final.py << 'EOF'
-          """
-          Real-ESRGAN Upscaler using ONLY PIL - No OpenCV dependency
-          """
+          cat > upscale.py << 'EOF'
           import os
           import sys
+          import cv2
           import glob
-          import traceback
-          from pathlib import Path
-          from PIL import Image
-          import numpy as np
-          import torch
+          import argparse
           
-          print("=" * 60)
-          print("Real-ESRGAN Upscaler - PIL Only Version")
-          print("=" * 60)
+          sys.path.insert(0, '/workspace')
           
-          # Debug: Show Python and package versions
-          print(f"Python: {sys.version}")
-          print(f"NumPy: {np.__version__}")
-          print(f"PyTorch: {torch.__version__}")
-          
-          # Import Real-ESRGAN
-          try:
-              from basicsr.archs.srvgg_arch import SRVGGNetCompact
-              from realesrgan import RealESRGANer
-              print("✓ Real-ESRGAN imported successfully")
-          except ImportError as e:
-              print(f"✗ Error importing Real-ESRGAN: {e}")
-              traceback.print_exc()
-              sys.exit(1)
-          
-          def pil_to_numpy_bgr(pil_img):
-              """Convert PIL Image to numpy array in BGR format"""
-              # Convert PIL to numpy array (RGB)
-              rgb_array = np.array(pil_img)
-              
-              # If grayscale, convert to 3-channel
-              if len(rgb_array.shape) == 2:
-                  rgb_array = np.stack([rgb_array] * 3, axis=-1)
-              
-              # Convert RGB to BGR (what Real-ESRGAN expects)
-              bgr_array = rgb_array[:, :, ::-1].copy()
-              return bgr_array
-          
-          def numpy_bgr_to_pil(bgr_array):
-              """Convert numpy array in BGR format to PIL Image"""
-              # Convert BGR to RGB
-              rgb_array = bgr_array[:, :, ::-1].copy()
-              
-              # Ensure valid range
-              rgb_array = np.clip(rgb_array, 0, 255).astype(np.uint8)
-              
-              return Image.fromarray(rgb_array)
+          from basicsr.archs.srvgg_arch import SRVGGNetCompact
+          from realesrgan import RealESRGANer
           
           def main():
-              # Configuration
-              input_dir = Path("images")
-              output_dir = Path("upscaled")
-              model_path = "weights/realesr-general-x4v3.pth"
+              parser = argparse.ArgumentParser()
+              parser.add_argument('--input', type=str, default='images', help='Input folder')
+              parser.add_argument('--output', type=str, default='upscaled', help='Output folder')
+              parser.add_argument('--model', type=str, default='weights/realesr-general-x4v3.pth', help='Model path')
+              args = parser.parse_args()
               
-              # Check input directory
-              if not input_dir.exists():
-                  print(f"✗ Error: Input directory '{input_dir}' does not exist!")
-                  print(f"  Please add images to the 'images' folder")
+              print("=" * 60)
+              print("Real-ESRGAN Upscaler")
+              print("=" * 60)
+              
+              # Debug info
+              import numpy as np
+              import torch
+              print(f"NumPy version: {np.__version__}")
+              print(f"PyTorch version: {torch.__version__}")
+              
+              # Check input
+              if not os.path.exists(args.input):
+                  print(f"Error: Input directory '{args.input}' does not exist!")
                   return
               
-              # Create output directory
-              output_dir.mkdir(parents=True, exist_ok=True)
-              
-              print(f"Input directory: {input_dir}")
-              print(f"Output directory: {output_dir}")
-              print(f"Model: {model_path}")
+              # Create output
+              os.makedirs(args.output, exist_ok=True)
               
               # Initialize model
-              print("\n" + "-" * 40)
-              print("Initializing Real-ESRGAN model...")
+              print("\nLoading model...")
+              model = SRVGGNetCompact(
+                  num_in_ch=3,
+                  num_out_ch=3,
+                  num_feat=64,
+                  num_conv=32,
+                  upscale=4,
+                  act_type='prelu'
+              )
               
-              try:
-                  model = SRVGGNetCompact(
-                      num_in_ch=3,
-                      num_out_ch=3,
-                      num_feat=64,
-                      num_conv=32,
-                      upscale=4,
-                      act_type='prelu'
-                  )
-                  
-                  upsampler = RealESRGANer(
-                      scale=4,
-                      model_path=model_path,
-                      model=model,
-                      tile=0,  # No tiling
-                      tile_pad=10,
-                      pre_pad=0,
-                      half=False,
-                      device=torch.device('cpu')
-                  )
-                  
-                  print("✓ Model loaded successfully!")
-                  
-              except Exception as e:
-                  print(f"✗ Error loading model: {e}")
-                  traceback.print_exc()
-                  return
+              upsampler = RealESRGANer(
+                  scale=4,
+                  model_path=args.model,
+                  model=model,
+                  tile=0,
+                  tile_pad=10,
+                  pre_pad=0,
+                  half=False,
+                  device='cpu'
+              )
               
-              # Find all image files
-              print("\n" + "-" * 40)
-              print("Searching for images...")
+              print("Model loaded!")
               
-              image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']
-              image_files = []
+              # Find images
+              images = []
+              for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+                  images.extend(glob.glob(os.path.join(args.input, '**', f'*{ext}'), recursive=True))
+                  images.extend(glob.glob(os.path.join(args.input, '**', f'*{ext.upper()}'), recursive=True))
               
-              for ext in image_extensions:
-                  for pattern in [f"*{ext}", f"*{ext.upper()}"]:
-                      found = list(input_dir.rglob(pattern))
-                      image_files.extend(found)
-                      if found:
-                          print(f"  Found {len(found)} {ext} files")
+              print(f"\nFound {len(images)} images")
               
-              # Remove duplicates
-              image_files = list(set(image_files))
-              print(f"\nTotal unique images found: {len(image_files)}")
-              
-              if len(image_files) == 0:
-                  print("✗ No images found in the 'images' directory!")
-                  print("  Supported formats: .jpg, .jpeg, .png, .bmp, .tiff, .webp")
-                  return
-              
-              # Process images
-              print("\n" + "-" * 40)
-              print("Starting upscaling...\n")
-              
-              success_count = 0
-              error_count = 0
-              
-              for i, img_path in enumerate(image_files, 1):
+              # Process
+              success = 0
+              for i, img_path in enumerate(images):
                   try:
-                      # Get relative path for output
-                      rel_path = img_path.relative_to(input_dir)
-                      output_path = output_dir / rel_path
-                      output_path.parent.mkdir(parents=True, exist_ok=True)
+                      rel_path = os.path.relpath(img_path, args.input)
+                      output_path = os.path.join(args.output, rel_path)
+                      os.makedirs(os.path.dirname(output_path), exist_ok=True)
                       
-                      print(f"[{i}/{len(image_files)}] Processing: {rel_path}")
+                      print(f"[{i+1}/{len(images)}] {rel_path}")
                       
-                      # Open image with PIL
-                      pil_img = Image.open(img_path)
+                      img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                      if img is None:
+                          print(f"  Failed to read")
+                          continue
                       
-                      # Convert to RGB if needed
-                      if pil_img.mode != 'RGB':
-                          pil_img = pil_img.convert('RGB')
+                      output, _ = upsampler.enhance(img, outscale=4)
+                      cv2.imwrite(output_path, output)
                       
-                      # Convert PIL to BGR numpy array
-                      img_bgr = pil_to_numpy_bgr(pil_img)
-                      
-                      # Upscale
-                      output_bgr, _ = upsampler.enhance(img_bgr, outscale=4)
-                      
-                      # Convert back to PIL and save
-                      output_pil = numpy_bgr_to_pil(output_bgr)
-                      output_pil.save(output_path)
-                      
-                      success_count += 1
-                      print(f"  ✓ Saved: {output_path}")
-                      
-                  except KeyboardInterrupt:
-                      print("\nProcess interrupted by user")
-                      break
+                      success += 1
+                      print(f"  ✓ Saved")
                       
                   except Exception as e:
-                      error_count += 1
-                      print(f"  ✗ Error: {str(e)[:100]}...")
-                      
-                      # Debug log for errors
-                      if error_count <= 3:  # Only show full trace for first few errors
-                          traceback.print_exc()
+                      print(f"  ✗ Error: {e}")
               
-              # Summary
-              print("\n" + "=" * 60)
-              print("PROCESSING COMPLETE")
-              print("=" * 60)
-              print(f"Total images: {len(image_files)}")
-              print(f"Successfully upscaled: {success_count}")
-              print(f"Failed: {error_count}")
-              print(f"Output directory: {output_dir}")
+              print(f"\nDone! Success: {success}/{len(images)}")
               
-              if success_count > 0:
-                  print("\n✓ Upscaling completed successfully!")
-                  
-                  # Create simple manifest file
-                  manifest_path = output_dir / "manifest.txt"
-                  with open(manifest_path, 'w') as f:
-                      f.write(f"Real-ESRGAN Upscaling Results\n")
-                      f.write(f"============================\n")
-                      f.write(f"Total processed: {len(image_files)}\n")
-                      f.write(f"Success: {success_count}\n")
-                      f.write(f"Failed: {error_count}\n")
-                      f.write(f"Model: realesr-general-x4v3\n")
-                      f.write(f"Scale: 4x\n\n")
-                      
-                      if success_count > 0:
-                          f.write("Processed files:\n")
-                          for img_path in image_files:
-                              if (output_dir / img_path.relative_to(input_dir)).exists():
-                                  f.write(f"  ✓ {img_path.relative_to(input_dir)}\n")
-                  
-                  print(f"Manifest created: {manifest_path}")
-                  
-              else:
-                  print("\n✗ No images were successfully processed")
+              if success == 0:
                   sys.exit(1)
           
           if __name__ == "__main__":
@@ -288,31 +164,9 @@ jobs:
           EOF
           
       - name: Run upscaling
-        run: |
-          source venv/bin/activate
-          echo "=" * 70
-          echo "STARTING UPSCALING PROCESS"
-          echo "=" * 70
-          python upscale_final.py
-          
-      - name: Verify results
-        run: |
-          if [ -d "upscaled" ]; then
-            echo "✓ Upscaled directory exists"
-            count=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) 2>/dev/null | wc -l)
-            echo "✓ Number of upscaled images: $count"
-            
-            # List first 5 files
-            echo "Sample files:"
-            find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) 2>/dev/null | head -5 | while read f; do
-              echo "  - $(basename "$f")"
-            done
-          else
-            echo "✗ No upscaled directory found"
-            exit 1
-          fi
-          
-      - name: Upload upscaled images
+        run: python upscale.py --input images --output upscaled
+        
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: upscaled-images
@@ -321,45 +175,28 @@ jobs:
           
       - name: Create summary
         run: |
-          echo "## 🎉 Real-ESRGAN Upscaling Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Real-ESRGAN Upscaling Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -d "upscaled" ]; then
-            total_files=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.bmp" \) 2>/dev/null | wc -l)
-            
-            echo "### 📊 Results Summary" >> $GITHUB_STEP_SUMMARY
-            echo "- **Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
-            echo "- **Total Images Processed**: $total_files" >> $GITHUB_STEP_SUMMARY
+            count=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | wc -l)
+            echo "### 📊 Results" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status**: Success ✅" >> $GITHUB_STEP_SUMMARY
+            echo "- **Images Processed**: $count" >> $GITHUB_STEP_SUMMARY
             echo "- **Model**: RealESRGAN general-x4v3" >> $GITHUB_STEP_SUMMARY
-            echo "- **Scale Factor**: 4x" >> $GITHUB_STEP_SUMMARY
-            echo "- **Method**: PIL-based (No OpenCV dependency)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Scale**: 4x" >> $GITHUB_STEP_SUMMARY
+            echo "- **Environment**: Docker (PyTorch 2.0.1 + NumPy 1.24.3)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             
-            # Show folder structure
-            echo "### 📁 Output Structure" >> $GITHUB_STEP_SUMMARY
-            find upscaled -type d 2>/dev/null | sort | while read dir; do
-              count=$(find "$dir" -maxdepth 1 -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) 2>/dev/null | wc -l)
-              if [ $count -gt 0 ]; then
-                dir_name=${dir#upscaled/}
-                [ -z "$dir_name" ] && dir_name="root"
-                echo "- **$dir_name**: $count images" >> $GITHUB_STEP_SUMMARY
-              fi
+            echo "### 📁 Files" >> $GITHUB_STEP_SUMMARY
+            find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | head -10 | while read f; do
+              echo "- $(basename "$f")" >> $GITHUB_STEP_SUMMARY
             done
-            
-            # Check for manifest
-            if [ -f "upscaled/manifest.txt" ]; then
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "### 📋 Manifest" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              head -20 upscaled/manifest.txt >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
+            total=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | wc -l)
+            if [ $total -gt 10 ]; then
+              echo "- ... and $((total - 10)) more" >> $GITHUB_STEP_SUMMARY
             fi
-            
           else
             echo "### ❌ Processing Failed" >> $GITHUB_STEP_SUMMARY
-            echo "No upscaled images were generated. Check the workflow logs for errors." >> $GITHUB_STEP_SUMMARY
+            echo "Check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
           fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "Download the upscaled images from the Artifacts section above." >> $GITHUB_STEP_SUMMARY
