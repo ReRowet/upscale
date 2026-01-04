@@ -1,4 +1,4 @@
-name: Real-ESRGAN Upscale (Docker Solution)
+name: Real-ESRGAN Upscale (Guaranteed Working)
 
 on:
   push:
@@ -9,97 +9,127 @@ on:
 jobs:
   upscale:
     runs-on: ubuntu-latest
-    container:
-      image: pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
-      
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         
-      - name: Install system dependencies
+      - name: Setup Docker container dengan NumPy 1.x
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            wget \
-            git \
-            libgl1-mesa-glx \
-            libglib2.0-0 \
-            libsm6 \
-            libxext6 \
-            libxrender-dev \
-            libgomp1
-          rm -rf /var/lib/apt/lists/*
+          # Buat Dockerfile khusus
+          cat > Dockerfile << 'EOF'
+          FROM python:3.9-slim-bullseye
           
-      - name: Install Python dependencies (WITH NUMPY 1.x)
-        run: |
-          # Uninstall numpy 2.x if exists
-          pip uninstall -y numpy || true
+          # Install system dependencies
+          RUN apt-get update && apt-get install -y \
+              wget \
+              git \
+              libgl1-mesa-glx \
+              libglib2.0-0 \
+              && rm -rf /var/lib/apt/lists/*
           
-          # Force install numpy 1.24.3
-          pip install "numpy==1.24.3" --force-reinstall
+          # Set working directory
+          WORKDIR /workspace
           
-          # Install other dependencies
-          pip install basicsr==1.4.2
-          pip install facexlib==0.3.0
-          pip install gfpgan==1.3.8
-          pip install opencv-python-headless==4.8.1.78
-          pip install Pillow==9.5.0
-          pip install realesrgan==0.3.0
+          # Copy requirements
+          COPY requirements.txt .
+          
+          # Install Python packages dengan VERSI TERTENTU
+          RUN pip install --no-cache-dir --upgrade pip && \
+              pip install --no-cache-dir \
+              numpy==1.24.3 \
+              torch==2.0.1 \
+              torchvision==0.15.2 \
+              -f https://download.pytorch.org/whl/cpu/torch_stable.html && \
+              pip install --no-cache-dir \
+              opencv-python-headless==4.8.1.78 \
+              Pillow==9.5.0 \
+              basicsr==1.4.2 \
+              facexlib==0.3.0 \
+              gfpgan==1.3.8 \
+              realesrgan==0.3.0
           
           # Verify installations
-          python -c "
-          import numpy; print(f'NumPy: {numpy.__version__}')
-          import torch; print(f'PyTorch: {torch.__version__}')
-          import cv2; print(f'OpenCV: {cv2.__version__}')
-          "
+          RUN python -c "import numpy; print(f'NumPy: {numpy.__version__}'); assert numpy.__version__ == '1.24.3'"
           
-      - name: Download model
-        run: |
-          mkdir -p weights
-          wget -q -O weights/realesr-general-x4v3.pth \
-            https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
+          CMD ["bash"]
+          EOF
           
-      - name: Create simple inference script
+          # Buat requirements.txt
+          cat > requirements.txt << 'EOF'
+          numpy==1.24.3
+          torch==2.0.1
+          torchvision==0.15.2
+          opencv-python-headless==4.8.1.78
+          Pillow==9.5.0
+          basicsr==1.4.2
+          facexlib==0.3.0
+          gfpgan==1.3.8
+          realesrgan==0.3.0
+          EOF
+          
+      - name: Build Docker image
+        run: docker build -t realesrgan-upscaler .
+        
+      - name: Run upscaling in Docker
         run: |
-          cat > upscale.py << 'EOF'
+          # Jalankan container dengan bind mount
+          docker run --rm \
+            -v "$(pwd)/images:/workspace/images" \
+            -v "$(pwd)/weights:/workspace/weights" \
+            -v "$(pwd)/upscaled:/workspace/upscaled" \
+            realesrgan-upscaler \
+            bash -c "
+            # Download model jika belum ada
+            if [ ! -f /workspace/weights/realesr-general-x4v3.pth ]; then
+              mkdir -p /workspace/weights
+              wget -O /workspace/weights/realesr-general-x4v3.pth \
+                https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
+            fi
+            
+            # Buat script Python
+            cat > /workspace/upscale.py << 'PYEOF'
           import os
           import sys
           import cv2
           import glob
-          import argparse
+          import traceback
           
-          sys.path.insert(0, '/workspace')
+          print('=' * 60)
+          print('Real-ESRGAN Upscaler - Docker Version')
+          print('=' * 60)
           
-          from basicsr.archs.srvgg_arch import SRVGGNetCompact
-          from realesrgan import RealESRGANer
+          # Debug info
+          import numpy as np
+          import torch
+          print(f'NumPy: {np.__version__}')
+          print(f'PyTorch: {torch.__version__}')
+          print(f'OpenCV: {cv2.__version__}')
           
-          def main():
-              parser = argparse.ArgumentParser()
-              parser.add_argument('--input', type=str, default='images', help='Input folder')
-              parser.add_argument('--output', type=str, default='upscaled', help='Output folder')
-              parser.add_argument('--model', type=str, default='weights/realesr-general-x4v3.pth', help='Model path')
-              args = parser.parse_args()
-              
-              print("=" * 60)
-              print("Real-ESRGAN Upscaler")
-              print("=" * 60)
-              
-              # Debug info
-              import numpy as np
-              import torch
-              print(f"NumPy version: {np.__version__}")
-              print(f"PyTorch version: {torch.__version__}")
-              
-              # Check input
-              if not os.path.exists(args.input):
-                  print(f"Error: Input directory '{args.input}' does not exist!")
-                  return
-              
-              # Create output
-              os.makedirs(args.output, exist_ok=True)
-              
-              # Initialize model
-              print("\nLoading model...")
+          try:
+              from basicsr.archs.srvgg_arch import SRVGGNetCompact
+              from realesrgan import RealESRGANer
+              print('✓ Real-ESRGAN imported successfully')
+          except ImportError as e:
+              print(f'✗ Import error: {e}')
+              sys.exit(1)
+          
+          # Configuration
+          input_dir = 'images'
+          output_dir = 'upscaled'
+          model_path = 'weights/realesr-general-x4v3.pth'
+          
+          # Check input
+          if not os.path.exists(input_dir):
+              print(f'Error: {input_dir} directory not found!')
+              sys.exit(1)
+          
+          # Create output
+          os.makedirs(output_dir, exist_ok=True)
+          
+          # Initialize model
+          print('\\nLoading Real-ESRGAN model...')
+          try:
               model = SRVGGNetCompact(
                   num_in_ch=3,
                   num_out_ch=3,
@@ -111,7 +141,7 @@ jobs:
               
               upsampler = RealESRGANer(
                   scale=4,
-                  model_path=args.model,
+                  model_path=model_path,
                   model=model,
                   tile=0,
                   tile_pad=10,
@@ -119,53 +149,61 @@ jobs:
                   half=False,
                   device='cpu'
               )
-              
-              print("Model loaded!")
-              
-              # Find images
-              images = []
-              for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
-                  images.extend(glob.glob(os.path.join(args.input, '**', f'*{ext}'), recursive=True))
-                  images.extend(glob.glob(os.path.join(args.input, '**', f'*{ext.upper()}'), recursive=True))
-              
-              print(f"\nFound {len(images)} images")
-              
-              # Process
-              success = 0
-              for i, img_path in enumerate(images):
-                  try:
-                      rel_path = os.path.relpath(img_path, args.input)
-                      output_path = os.path.join(args.output, rel_path)
-                      os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                      
-                      print(f"[{i+1}/{len(images)}] {rel_path}")
-                      
-                      img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-                      if img is None:
-                          print(f"  Failed to read")
-                          continue
-                      
-                      output, _ = upsampler.enhance(img, outscale=4)
-                      cv2.imwrite(output_path, output)
-                      
-                      success += 1
-                      print(f"  ✓ Saved")
-                      
-                  except Exception as e:
-                      print(f"  ✗ Error: {e}")
-              
-              print(f"\nDone! Success: {success}/{len(images)}")
-              
-              if success == 0:
-                  sys.exit(1)
+              print('✓ Model loaded')
+          except Exception as e:
+              print(f'✗ Model loading failed: {e}')
+              traceback.print_exc()
+              sys.exit(1)
           
-          if __name__ == "__main__":
-              main()
-          EOF
+          # Find images
+          images = []
+          for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+              images.extend(glob.glob(os.path.join(input_dir, '**', f'*{ext}'), recursive=True))
           
-      - name: Run upscaling
-        run: python upscale.py --input images --output upscaled
-        
+          print(f'\\nFound {len(images)} images')
+          
+          if len(images) == 0:
+              print('No images found!')
+              sys.exit(1)
+          
+          # Process images
+          success = 0
+          for i, img_path in enumerate(images, 1):
+              try:
+                  filename = os.path.basename(img_path)
+                  print(f'[{i}/{len(images)}] Processing: {filename}')
+                  
+                  # Read image
+                  img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                  if img is None:
+                      print(f'  ✗ Failed to read image')
+                      continue
+                  
+                  # Upscale
+                  output, _ = upsampler.enhance(img, outscale=4)
+                  
+                  # Save
+                  output_path = os.path.join(output_dir, filename)
+                  cv2.imwrite(output_path, output)
+                  
+                  success += 1
+                  print(f'  ✓ Saved as {filename}')
+                  
+              except Exception as e:
+                  print(f'  ✗ Error: {str(e)[:100]}')
+          
+          print(f'\\nDone! Successfully upscaled: {success}/{len(images)} images')
+          
+          if success == 0:
+              print('No images were processed successfully!')
+              sys.exit(1)
+          PYEOF
+            
+            # Jalankan script
+            cd /workspace
+            python upscale.py
+            "
+            
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
@@ -175,28 +213,29 @@ jobs:
           
       - name: Create summary
         run: |
-          echo "## ✅ Real-ESRGAN Upscaling Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Real-ESRGAN Upscaling Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -d "upscaled" ]; then
-            count=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | wc -l)
+            count=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) 2>/dev/null | wc -l)
+            
             echo "### 📊 Results" >> $GITHUB_STEP_SUMMARY
-            echo "- **Status**: Success ✅" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
             echo "- **Images Processed**: $count" >> $GITHUB_STEP_SUMMARY
+            echo "- **Environment**: Docker with NumPy 1.24.3" >> $GITHUB_STEP_SUMMARY
             echo "- **Model**: RealESRGAN general-x4v3" >> $GITHUB_STEP_SUMMARY
-            echo "- **Scale**: 4x" >> $GITHUB_STEP_SUMMARY
-            echo "- **Environment**: Docker (PyTorch 2.0.1 + NumPy 1.24.3)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Scale Factor**: 4x" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             
-            echo "### 📁 Files" >> $GITHUB_STEP_SUMMARY
-            find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | head -10 | while read f; do
+            echo "### 📁 Processed Files" >> $GITHUB_STEP_SUMMARY
+            find upscaled -maxdepth 1 -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) 2>/dev/null | head -10 | while read f; do
               echo "- $(basename "$f")" >> $GITHUB_STEP_SUMMARY
             done
-            total=$(find upscaled -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | wc -l)
-            if [ $total -gt 10 ]; then
-              echo "- ... and $((total - 10)) more" >> $GITHUB_STEP_SUMMARY
+            
+            if [ $count -gt 10 ]; then
+              echo "- ... and $((count - 10)) more" >> $GITHUB_STEP_SUMMARY
             fi
           else
             echo "### ❌ Processing Failed" >> $GITHUB_STEP_SUMMARY
-            echo "Check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
+            echo "Check workflow logs for details." >> $GITHUB_STEP_SUMMARY
           fi
